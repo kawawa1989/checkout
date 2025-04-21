@@ -1046,27 +1046,29 @@ function prepareExistingDirectory(git, repositoryPath, repositoryUrl, clean, ref
 
         let directoryExists = fsHelper.directoryExistsSync(path.join(repositoryPath, '.git'));
         let fetchSucceeded = false;
-        for (let i = 0; i < 8; i++) {
-            let fetchUrl = (yield git.tryGetFetchUrl());
-            let repositoryUrlIsCorrect = repositoryUrl === fetchUrl;
-            if (repositoryUrlIsCorrect) {
-                core.info(`fetchUrl: ${fetchUrl}`);
-                core.info(`repositoryUrl: ${repositoryUrl}`);
-                core.info(`repositoryUrlIsCorrect: ${repositoryUrlIsCorrect}`);
-                fetchSucceeded = true;
-                break;
-            }
-
-            core.info(`Repository URL is incorrect retry: ${i}`);
-            yield sleep(1 << i);
-        }
-
-        if (!fetchSucceeded) {
-            throw new Error(`Fetch url '${repositoryUrl}' was failed.`);
-        }
-
-        core.info(`repositoryPath: ${path.join(repositoryPath, '.git')}`);
         core.info(`directoryExists: ${directoryExists}`);
+        core.info(`repositoryPath: ${path.join(repositoryPath, '.git')}`);
+
+        if (directoryExists) {
+            for (let i = 0; i < 8; i++) {
+                let fetchUrl = (yield git.tryGetFetchUrl());
+                let repositoryUrlIsCorrect = repositoryUrl === fetchUrl;
+                if (repositoryUrlIsCorrect) {
+                    core.info(`fetchUrl: ${fetchUrl}`);
+                    core.info(`repositoryUrl: ${repositoryUrl}`);
+                    core.info(`repositoryUrlIsCorrect: ${repositoryUrlIsCorrect}`);
+                    fetchSucceeded = true;
+                    break;
+                }
+    
+                core.info(`Repository URL is incorrect retry: ${i}`);
+                yield sleep(1 << i);
+            }
+    
+            if (!fetchSucceeded) {
+                throw new Error(`Fetch url '${repositoryUrl}' was failed.`);
+            }
+        }
 
         // Check if the directory exists
         if (!directoryExists) {
