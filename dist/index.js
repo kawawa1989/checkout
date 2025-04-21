@@ -1027,6 +1027,12 @@ const io = __importStar(__nccwpck_require__(7436));
 const path = __importStar(__nccwpck_require__(1017));
 function prepareExistingDirectory(git, repositoryPath, repositoryUrl, clean, ref) {
     return __awaiter(this, void 0, void 0, function* () {
+        function sleep(seconds) {
+            return __awaiter(this, void 0, void 0, function* () {
+                return new Promise(resolve => setTimeout(resolve, seconds * 1000));
+            });
+        }
+
         var _a;
         assert.ok(repositoryPath, 'Expected repositoryPath to be defined');
         assert.ok(repositoryUrl, 'Expected repositoryUrl to be defined');
@@ -1035,83 +1041,109 @@ function prepareExistingDirectory(git, repositoryPath, repositoryUrl, clean, ref
         // Check whether using git or REST API
         if (!git) {
             remove = true;
+            throw new Error(`git is not defined`);
         }
-        // Fetch URL does not match
-        else if (!fsHelper.directoryExistsSync(path.join(repositoryPath, '.git')) ||
-            repositoryUrl !== (yield git.tryGetFetchUrl())) {
+
+        let directoryExists = fsHelper.directoryExistsSync(path.join(repositoryPath, '.git'));
+        let fetchSucceeded = false;
+        for (let i = 0; i < 8; i++) {
+            let fetchUrl = (yield git.tryGetFetchUrl());
+            let repositoryUrlIsCorrect = repositoryUrl === fetchUrl;
+            if (repositoryUrlIsCorrect) {
+                core.info(`fetchUrl: ${fetchUrl}`);
+                core.info(`repositoryUrl: ${repositoryUrl}`);
+                core.info(`repositoryUrlIsCorrect: ${repositoryUrlIsCorrect}`);
+                fetchSucceeded = true;
+                break;
+            }
+
+            core.info(`Repository URL is incorrect retry: ${i}`);
+            yield sleep(1 << i);
+        }
+
+        if (!fetchSucceeded) {
+            throw new Error(`Fetch url '${repositoryUrl}' was failed.`);
+        }
+
+        core.info(`repositoryPath: ${path.join(repositoryPath, '.git')}`);
+        core.info(`directoryExists: ${directoryExists}`);
+
+        // Check if the directory exists
+        if (!directoryExists) {
+            core.warning(`The repository URL does not match the existing repository. The repository will be recreated instead.`);
             remove = true;
         }
-        else {
-            // Delete any index.lock and shallow.lock left by a previously canceled run or crashed git process
-            const lockPaths = [
-                path.join(repositoryPath, '.git', 'index.lock'),
-                path.join(repositoryPath, '.git', 'shallow.lock')
-            ];
-            for (const lockPath of lockPaths) {
-                try {
-                    yield io.rmRF(lockPath);
-                }
-                catch (error) {
-                    core.debug(`Unable to delete '${lockPath}'. ${(_a = error === null || error === void 0 ? void 0 : error.message) !== null && _a !== void 0 ? _a : error}`);
-                }
-            }
+
+        // Delete any index.lock and shallow.lock left by a previously canceled run or crashed git process
+        const lockPaths = [
+            path.join(repositoryPath, '.git', 'index.lock'),
+            path.join(repositoryPath, '.git', 'shallow.lock')
+        ];
+        for (const lockPath of lockPaths) {
             try {
-                core.startGroup('Removing previously created refs, to avoid conflicts');
-                // Checkout detached HEAD
-                if (!(yield git.isDetached())) {
-                    yield git.checkoutDetach();
-                }
-                // Remove all refs/heads/*
-                let branches = yield git.branchList(false);
-                for (const branch of branches) {
-                    yield git.branchDelete(false, branch);
-                }
-                // Remove any conflicting refs/remotes/origin/*
-                // Example 1: Consider ref is refs/heads/foo and previously fetched refs/remotes/origin/foo/bar
-                // Example 2: Consider ref is refs/heads/foo/bar and previously fetched refs/remotes/origin/foo
-                if (ref) {
-                    ref = ref.startsWith('refs/') ? ref : `refs/heads/${ref}`;
-                    if (ref.startsWith('refs/heads/')) {
-                        const upperName1 = ref.toUpperCase().substr('REFS/HEADS/'.length);
-                        const upperName1Slash = `${upperName1}/`;
-                        branches = yield git.branchList(true);
-                        for (const branch of branches) {
-                            const upperName2 = branch.substr('origin/'.length).toUpperCase();
-                            const upperName2Slash = `${upperName2}/`;
-                            if (upperName1.startsWith(upperName2Slash) ||
-                                upperName2.startsWith(upperName1Slash)) {
-                                yield git.branchDelete(true, branch);
-                            }
+                yield io.rmRF(lockPath);
+            }
+            catch (error) {
+                core.debug(`Unable to delete '${lockPath}'. ${(_a = error === null || error === void 0 ? void 0 : error.message) !== null && _a !== void 0 ? _a : error}`);
+            }
+        }
+        try {
+            core.startGroup('Removing previously created refs, to avoid conflicts');
+            // Checkout detached HEAD
+            if (!(yield git.isDetached())) {
+                yield git.checkoutDetach();
+            }
+            // Remove all refs/heads/*
+            let branches = yield git.branchList(false);
+            for (const branch of branches) {
+                yield git.branchDelete(false, branch);
+            }
+            // Remove any conflicting refs/remotes/origin/*
+            // Example 1: Consider ref is refs/heads/foo and previously fetched refs/remotes/origin/foo/bar
+            // Example 2: Consider ref is refs/heads/foo/bar and previously fetched refs/remotes/origin/foo
+            if (ref) {
+                ref = ref.startsWith('refs/') ? ref : `refs/heads/${ref}`;
+                if (ref.startsWith('refs/heads/')) {
+                    const upperName1 = ref.toUpperCase().substr('REFS/HEADS/'.length);
+                    const upperName1Slash = `${upperName1}/`;
+                    branches = yield git.branchList(true);
+                    for (const branch of branches) {
+                        const upperName2 = branch.substr('origin/'.length).toUpperCase();
+                        const upperName2Slash = `${upperName2}/`;
+                        if (upperName1.startsWith(upperName2Slash) ||
+                            upperName2.startsWith(upperName1Slash)) {
+                            yield git.branchDelete(true, branch);
                         }
                     }
                 }
-                core.endGroup();
-                // Check for submodules and delete any existing files if submodules are present
-                if (!(yield git.submoduleStatus())) {
-                    remove = true;
-                    core.info('Bad Submodules found, removing existing files');
-                }
-                // Clean
-                if (clean) {
-                    core.startGroup('Cleaning the repository');
-                    if (!(yield git.tryClean())) {
-                        core.debug(`The clean command failed. This might be caused by: 1) path too long, 2) permission issue, or 3) file in use. For further investigation, manually run 'git clean -ffdx' on the directory '${repositoryPath}'.`);
-                        remove = true;
-                    }
-                    else if (!(yield git.tryReset())) {
-                        remove = true;
-                    }
-                    core.endGroup();
-                    if (remove) {
-                        core.warning(`Unable to clean or reset the repository. The repository will be recreated instead.`);
-                    }
-                }
             }
-            catch (error) {
-                core.warning(`Unable to prepare the existing repository. The repository will be recreated instead.`);
+            core.endGroup();
+            // Check for submodules and delete any existing files if submodules are present
+            if (!(yield git.submoduleStatus())) {
                 remove = true;
+                core.info('Bad Submodules found, removing existing files');
+            }
+            // Clean
+            if (clean) {
+                core.startGroup('Cleaning the repository');
+                if (!(yield git.tryClean())) {
+                    core.debug(`The clean command failed. This might be caused by: 1) path too long, 2) permission issue, or 3) file in use. For further investigation, manually run 'git clean -ffdx' on the directory '${repositoryPath}'.`);
+                    remove = true;
+                }
+                else if (!(yield git.tryReset())) {
+                    remove = true;
+                }
+                core.endGroup();
+                if (remove) {
+                    core.warning(`Unable to clean or reset the repository. The repository will be recreated instead.`);
+                }
             }
         }
+        catch (error) {
+            core.warning(`Unable to prepare the existing repository. The repository will be recreated instead.`);
+            remove = true;
+        }
+        
         if (remove) {
             // Delete the contents of the directory. Don't delete the directory itself
             // since it might be the current working directory.
